@@ -1,83 +1,81 @@
 package blockchain
 
 import (
+	"bytes"
 	"crypto/sha256"
-	"encoding/json"
-	"fmt"
-	"log"
+	"encoding/binary"
+	"encoding/gob"
 	"time"
-
-	"blockchain/storage"
 )
 
 type Block struct {
 	Index        int
 	Timestamp    int64
 	Transactions []Transaction
-	PrevHash     string
-	Hash         string
-	Validator    string
+	PrevHash     []byte
+	Hash         []byte
+	Nonce        int
 }
 
-type Transaction struct {
-	Sender    string
-	Recipient string
-	Amount    float64
-}
-
-type Blockchain struct {
-	Blocks []*Block
-	DB     *storage.Database
-}
-
-func NewBlockchain(db *storage.Database) *Blockchain {
-	bc := &Blockchain{DB: db}
-	genesis := bc.CreateGenesisBlock()
-	bc.AddBlock(genesis)
-	return bc
-}
-
-func (bc *Blockchain) CreateGenesisBlock() *Block {
-	return &Block{
-		Index:        0,
-		Timestamp:    time.Now().Unix(),
-		Transactions: []Transaction{},
-		PrevHash:     "",
-		Hash:         calculateHash(0, time.Now().Unix(), nil, ""),
-		Validator:    "system",
-	}
-}
-
-func (bc *Blockchain) AddBlock(block *Block) {
-	bc.Blocks = append(bc.Blocks, block)
-	err := bc.DB.SaveBlock(block)
-	if err != nil {
-		log.Printf("Failed to save block: %v", err)
-	}
-}
-
-func (bc *Blockchain) CreateBlock(transactions []Transaction, validator string) *Block {
-	lastBlock := bc.Blocks[len(bc.Blocks)-1]
-	newBlock := &Block{
-		Index:        lastBlock.Index + 1,
+func NewBlock(index int, transactions []Transaction, prevHash []byte) *Block {
+	block := &Block{
+		Index:        index,
 		Timestamp:    time.Now().Unix(),
 		Transactions: transactions,
-		PrevHash:     lastBlock.Hash,
-		Hash:         calculateHash(lastBlock.Index+1, time.Now().Unix(), transactions, lastBlock.Hash),
-		Validator:    validator,
+		PrevHash:     prevHash,
+		Nonce:        0,
 	}
-	bc.AddBlock(newBlock)
-	return newBlock
+	block.Hash = block.CalculateHash()
+	return block
 }
 
-func calculateHash(index int, timestamp int64, transactions []Transaction, prevHash string) string {
-	record := fmt.Sprintf("%d%d%s%s", index, timestamp, transactionsToString(transactions), prevHash)
-	h := sha256.New()
-	h.Write([]byte(record))
-	return fmt.Sprintf("%x", h.Sum(nil))
+func (b *Block) CalculateHash() []byte {
+	data := bytes.Join([][]byte{
+		IntToHex(b.Index),
+		IntToHex(int(b.Timestamp)),
+		b.PrevHash,
+		b.HashTransactions(),
+		IntToHex(b.Nonce),
+	}, []byte{})
+
+	hash := sha256.Sum256(data)
+	return hash[:]
 }
 
-func transactionsToString(transactions []Transaction) string {
-	data, _ := json.Marshal(transactions)
-	return string(data)
+func (b *Block) HashTransactions() []byte {
+	var txHashes [][]byte
+	for _, tx := range b.Transactions {
+		txHash := tx.Hash()
+		txHashes = append(txHashes, txHash)
+	}
+	if len(txHashes) == 0 {
+		return []byte{}
+	}
+	data := bytes.Join(txHashes, []byte{})
+	hash := sha256.Sum256(data)
+	return hash[:]
+}
+
+func (b *Block) Serialize() ([]byte, error) {
+	var result bytes.Buffer
+	encoder := gob.NewEncoder(&result)
+	if err := encoder.Encode(b); err != nil {
+		return nil, err
+	}
+	return result.Bytes(), nil
+}
+
+func DeserializeBlock(data []byte) (*Block, error) {
+	var block Block
+	decoder := gob.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&block); err != nil {
+		return nil, err
+	}
+	return &block, nil
+}
+
+func IntToHex(num int) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(num))
+	return buf
 }

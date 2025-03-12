@@ -2,60 +2,64 @@ package storage
 
 import (
 	"blockchain/blockchain"
-	"encoding/json"
-	bolt "go.etcd.io/bbolt"
+	"encoding/binary"
+	"go.etcd.io/bbolt"
 )
 
-type Database struct {
-	db *bolt.DB
+type DB struct {
+	db *bbolt.DB
 }
 
-func InitDB(dbPath string) (*Database, error) {
-	db, err := bolt.Open(dbPath, 0600, nil)
+func InitDB(path string) (*DB, error) {
+	db, err := bbolt.Open(path, 0600, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Database{db: db}, nil
+	return &DB{db: db}, nil
 }
 
-func (d *Database) Close() {
-	d.db.Close()
-}
+func (d *DB) SaveBlock(block *blockchain.Block) error {
+	data, err := block.Serialize()
+	if err != nil {
+		return err
+	}
 
-func (d *Database) SaveBlock(block *blockchain.Block) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte("blocks"))
+	return d.db.Update(func(tx *bbolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists([]byte("blocks"))
 		if err != nil {
 			return err
 		}
-
-		blockData, err := json.Marshal(block)
-		if err != nil {
-			return err
-		}
-
-		return b.Put([]byte(block.Hash), blockData)
+		return bucket.Put(IntToHex(block.Index), data)
 	})
 }
 
-func (d *Database) LoadBlockchain() ([]*blockchain.Block, error) {
+func (d *DB) LoadBlocks() ([]*blockchain.Block, error) {
 	var blocks []*blockchain.Block
 
-	err := d.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("blocks"))
-		if b == nil {
+	err := d.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte("blocks"))
+		if bucket == nil {
 			return nil
 		}
-
-		return b.ForEach(func(k, v []byte) error {
-			var block blockchain.Block
-			if err := json.Unmarshal(v, &block); err != nil {
+		return bucket.ForEach(func(_, v []byte) error {
+			block, err := blockchain.DeserializeBlock(v)
+			if err != nil {
 				return err
 			}
-			blocks = append(blocks, &block)
+			blocks = append(blocks, block)
 			return nil
 		})
 	})
 
-	return blocks, err
+	if err != nil {
+		return nil, err
+	}
+
+	return blocks, nil
+}
+
+func IntToHex(num int) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(num))
+	return buf
 }
